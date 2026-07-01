@@ -16,10 +16,9 @@ from aiogram.fsm.storage.memory import MemoryStorage
 import gspread
 from google.oauth2.service_account import Credentials
 
-BOT_TOKEN = os.getenv("BOT_TOKEN", "ВАШ_ТОКЕН_ТУТ")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1z-k_AT38cIoX8h1k9OIEsgFoLUKNz2iClmjyaRXc9-M")
-CREDENTIALS_FILE = "credentials.json"
-CACHE_TTL = 300  # оновлення кешу кожні 5 хвилин
+BOT_TOKEN = os.getenv("BOT_TOKEN", "")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "")
+CACHE_TTL = 300
 
 SCOPES = [
     "https://www.googleapis.com/auth/spreadsheets",
@@ -29,7 +28,6 @@ SCOPES = [
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# ── Кеш ───────────────────────────────────────────────────────
 _cache = {
     "handbook": {"data": None, "ts": 0},
     "quiz":     {"data": None, "ts": 0},
@@ -41,7 +39,7 @@ def get_sheet():
     if google_creds:
         creds = Credentials.from_service_account_info(json.loads(google_creds), scopes=SCOPES)
     else:
-        creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+        creds = Credentials.from_service_account_file("credentials.json", scopes=SCOPES)
     client = gspread.authorize(creds)
     return client.open_by_key(SPREADSHEET_ID)
 
@@ -66,14 +64,13 @@ def get_handbook_data(force=False):
         rows = sheet.get_all_records()
         data = {}
         for row in rows:
-            cat  = str(row.get("Категорія", "")).strip()
-            name = str(row.get("Назва", "")).strip()
-            desc = str(row.get("Опис", "")).strip()
+            cat   = str(row.get("Категорія", "")).strip()
+            name  = str(row.get("Назва", "")).strip()
+            desc  = str(row.get("Опис", "")).strip()
             photo = str(row.get("Фото", "")).strip()
             if cat and name:
                 data.setdefault(cat, []).append((name, desc, photo))
         _cache["handbook"] = {"data": data, "ts": now}
-        logger.info("Довідник оновлено з таблиці")
         return data
     except Exception as e:
         logger.error(f"Помилка читання довідника: {e}")
@@ -101,7 +98,6 @@ def get_quiz_questions(force=False):
             if q["question"]:
                 questions.append(q)
         _cache["quiz"] = {"data": questions, "ts": now}
-        logger.info("Тест оновлено з таблиці")
         return questions
     except Exception as e:
         logger.error(f"Помилка читання тесту: {e}")
@@ -128,9 +124,9 @@ class QuizState(StatesGroup):
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📚 Довідник",    callback_data="handbook")],
-        [InlineKeyboardButton(text="🔍 Пошук",       callback_data="search")],
-        [InlineKeyboardButton(text="📝 Пройти тест", callback_data="quiz_start")],
+        [InlineKeyboardButton(text="📚 Довідник",     callback_data="handbook")],
+        [InlineKeyboardButton(text="🔍 Пошук",        callback_data="search")],
+        [InlineKeyboardButton(text="📝 Пройти тест",  callback_data="quiz_start")],
         [InlineKeyboardButton(text="🔄 Оновити дані", callback_data="refresh")],
     ])
 
@@ -193,7 +189,6 @@ async def cb_main_menu(call: CallbackQuery, state: FSMContext):
 
 @dp.callback_query(F.data == "refresh")
 async def cb_refresh(call: CallbackQuery):
-    await call.answer("⏳ Оновлюю дані...", show_alert=False)
     get_handbook_data(force=True)
     get_quiz_questions(force=True)
     await call.answer("✅ Дані оновлено!", show_alert=True)
@@ -231,12 +226,11 @@ async def cb_item(call: CallbackQuery):
     name, desc, photo_url = items[idx]
     text = f"📌 <b>{name}</b>\n\n{desc}"
     photo = convert_drive_link(photo_url)
-
     if photo:
         try:
             await call.message.answer_photo(photo=photo)
         except Exception as e:
-            logger.error(f"Помилка відправки фото: {e}")
+            logger.error(f"Помилка фото: {e}")
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=back_to_categories_kb())
     await call.answer()
 
@@ -263,13 +257,11 @@ async def handle_text_in_state(message: Message, state: FSMContext):
         await state.clear()
         if results:
             text = "\n\n─────────────\n\n".join(results[:5])
-            if len(results) > 5:
-                text += f"\n\n... та ще {len(results)-5} результатів."
         else:
             text = "❌ Нічого не знайдено. Спробуйте інше слово."
         await message.answer(text, parse_mode="HTML", reply_markup=main_menu_kb())
     elif mode == "quiz":
-        await message.answer("⬆️ Будь ласка, обери варіант відповіді кнопкою вище.")
+        await message.answer("⬆️ Обери варіант відповіді кнопкою вище.")
 
 
 @dp.callback_query(F.data == "quiz_start")
@@ -283,7 +275,7 @@ async def cb_quiz_start(call: CallbackQuery, state: FSMContext):
     await send_question(call.message, state, edit=True)
 
 
-async def send_question(message: Message, state: FSMContext, edit=False):
+async def send_question(message, state, edit=False):
     data = await state.get_data()
     questions = data["questions"]
     idx = data["q_index"]
@@ -355,7 +347,6 @@ async def cb_answer(call: CallbackQuery, state: FSMContext):
 
 
 async def preload_cache():
-    """Завантажує дані при старті бота"""
     logger.info("Завантаження кешу...")
     get_handbook_data(force=True)
     get_quiz_questions(force=True)
