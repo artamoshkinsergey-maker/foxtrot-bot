@@ -3,7 +3,6 @@ import logging
 import os
 import re
 import json
-import json
 import time
 from datetime import datetime
 
