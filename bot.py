@@ -30,7 +30,7 @@ logger = logging.getLogger(__name__)
 
 _cache = {
     "handbook": {"data": None, "ts": 0},
-    "quiz":     {"data": None, "ts": 0},
+    "quiz": {"data": None, "ts": 0},
 }
 
 
@@ -64,9 +64,9 @@ def get_handbook_data(force=False):
         rows = sheet.get_all_records()
         data = {}
         for row in rows:
-            cat   = str(row.get("Категорія", "")).strip()
-            name  = str(row.get("Назва", "")).strip()
-            desc  = str(row.get("Опис", "")).strip()
+            cat = str(row.get("Категорія", "")).strip()
+            name = str(row.get("Назва", "")).strip()
+            desc = str(row.get("Опис", "")).strip()
             photo = str(row.get("Фото", "")).strip()
             if cat and name:
                 data.setdefault(cat, []).append((name, desc, photo))
@@ -87,12 +87,12 @@ def get_quiz_questions(force=False):
         questions = []
         for row in rows:
             q = {
-                "question":    str(row.get("Питання", "")).strip(),
-                "a":           str(row.get("A", "")).strip(),
-                "b":           str(row.get("B", "")).strip(),
-                "c":           str(row.get("C", "")).strip(),
-                "d":           str(row.get("D", "")).strip(),
-                "correct":     str(row.get("Правильна відповідь", "")).strip().upper(),
+                "question": str(row.get("Питання", "")).strip(),
+                "a": str(row.get("A", "")).strip(),
+                "b": str(row.get("B", "")).strip(),
+                "c": str(row.get("C", "")).strip(),
+                "d": str(row.get("D", "")).strip(),
+                "correct": str(row.get("Правильна відповідь", "")).strip().upper(),
                 "explanation": str(row.get("Пояснення", "")).strip(),
             }
             if q["question"]:
@@ -124,15 +124,20 @@ class QuizState(StatesGroup):
 
 def main_menu_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
-        [InlineKeyboardButton(text="📚 Довідник",     callback_data="handbook")],
-        [InlineKeyboardButton(text="🔍 Пошук",        callback_data="search")],
-        [InlineKeyboardButton(text="📝 Пройти тест",  callback_data="quiz_start")],
+        [InlineKeyboardButton(text="📚 Довідник", callback_data="handbook")],
+        [InlineKeyboardButton(text="🔍 Пошук", callback_data="search")],
+        [InlineKeyboardButton(text="📝 Пройти тест", callback_data="quiz_start")],
         [InlineKeyboardButton(text="🔄 Оновити дані", callback_data="refresh")],
     ])
 
 
 def categories_kb(categories):
-    buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat:{cat}")] for cat in categories]
+    # ВАЖНО: в callback_data кладём индекс категории, а не её текст.
+    # Раньше здесь было callback_data=f"cat:{cat}" — при длинном названии
+    # категории (особенно на кириллице) это превышало лимит Telegram
+    # в 64 байта и вызывало ошибку BUTTON_DATA_INVALID.
+    buttons = [[InlineKeyboardButton(text=cat, callback_data=f"cat:{i}")]
+               for i, cat in enumerate(categories)]
     buttons.append([InlineKeyboardButton(text="🏠 Головне меню", callback_data="main_menu")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
 
@@ -140,12 +145,14 @@ def categories_kb(categories):
 def back_to_categories_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="◀️ Назад до категорій", callback_data="handbook")],
-        [InlineKeyboardButton(text="🏠 Головне меню",       callback_data="main_menu")],
+        [InlineKeyboardButton(text="🏠 Головне меню", callback_data="main_menu")],
     ])
 
 
-def items_kb(items, category):
-    buttons = [[InlineKeyboardButton(text=name, callback_data=f"item:{category}:{i}")]
+def items_kb(items, cat_idx):
+    # Аналогично: раньше было callback_data=f"item:{category}:{i}",
+    # теперь используем индекс категории вместо её названия.
+    buttons = [[InlineKeyboardButton(text=name, callback_data=f"item:{cat_idx}:{i}")]
                for i, (name, _, _) in enumerate(items)]
     buttons.append([InlineKeyboardButton(text="◀️ Назад", callback_data="handbook")])
     return InlineKeyboardMarkup(inline_keyboard=buttons)
@@ -163,7 +170,7 @@ def quiz_answer_kb(q_index):
 def quiz_finish_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="🔄 Пройти ще раз", callback_data="quiz_start")],
-        [InlineKeyboardButton(text="🏠 Головне меню",   callback_data="main_menu")],
+        [InlineKeyboardButton(text="🏠 Головне меню", callback_data="main_menu")],
     ])
 
 
@@ -205,20 +212,35 @@ async def cb_handbook(call: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("cat:"))
 async def cb_category(call: CallbackQuery):
-    category = call.data[4:]
+    idx_str = call.data[4:]
+    if not idx_str.isdigit():
+        await call.answer("Некоректна категорія", show_alert=True)
+        return
+    idx = int(idx_str)
     data = get_handbook_data()
+    categories = list(data.keys())
+    if idx >= len(categories):
+        await call.answer("Категорія не знайдена", show_alert=True)
+        return
+    category = categories[idx]
     items = data.get(category, [])
     if not items:
         await call.answer("Категорія порожня", show_alert=True)
         return
-    await call.message.edit_text(f"📂 {category}\n\nОберіть пункт:", reply_markup=items_kb(items, category))
+    await call.message.edit_text(f"📂 {category}\n\nОберіть пункт:", reply_markup=items_kb(items, idx))
 
 
 @dp.callback_query(F.data.startswith("item:"))
 async def cb_item(call: CallbackQuery):
-    _, category, idx_str = call.data.split(":", 2)
+    _, cat_idx_str, idx_str = call.data.split(":", 2)
+    cat_idx = int(cat_idx_str)
     idx = int(idx_str)
     data = get_handbook_data()
+    categories = list(data.keys())
+    if cat_idx >= len(categories):
+        await call.answer("Не знайдено", show_alert=True)
+        return
+    category = categories[cat_idx]
     items = data.get(category, [])
     if idx >= len(items):
         await call.answer("Не знайдено", show_alert=True)
@@ -319,8 +341,8 @@ async def cb_answer(call: CallbackQuery, state: FSMContext):
     else:
         wrong_topics.append(q["question"][:50])
         feedback = f"❌ Неправильно! Правильна відповідь: <b>{correct}</b>"
-    if q.get("explanation"):
-        feedback += f"\n\n💡 {q['explanation']}"
+        if q.get("explanation"):
+            feedback += f"\n\n💡 {q['explanation']}"
     next_idx = idx + 1
     total = len(questions)
     await state.update_data(q_index=next_idx, score=score, wrong_topics=wrong_topics)
